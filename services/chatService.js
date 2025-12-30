@@ -1,7 +1,55 @@
 const { supabase } = require('../config/database');
 const embeddingService = require('./embeddingService');
-const chunkText = require('../utils/chunking'); // Fixed: should work now
+// const chunkText = require('../utils/chunking'); // Fixed: should work now
 const logger = require('../utils/logger');
+
+
+
+
+
+function chunkText(text, messages = null, maxChunkSize = 3000) {
+    const chunks = [];
+    
+    if (messages && Array.isArray(messages)) {
+        let currentChunk = '';
+        
+        for (const msg of messages) {
+            const messageText = `${msg.role}: ${msg.content}\n\n`;
+            
+            if (currentChunk.length + messageText.length > maxChunkSize && currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+                currentChunk = '';
+            }
+            
+            currentChunk += messageText;
+        }
+        
+        if (currentChunk.trim()) {
+            chunks.push(currentChunk.trim());
+        }
+    } else {
+        const words = text.split(/\s+/);
+        let currentChunk = '';
+        
+        for (const word of words) {
+            if (currentChunk.length + word.length + 1 > maxChunkSize && currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+                currentChunk = '';
+            }
+            currentChunk += (currentChunk ? ' ' : '') + word;
+        }
+        
+        if (currentChunk.trim()) {
+            chunks.push(currentChunk.trim());
+        }
+    }
+    
+    if (chunks.length === 0 && text) {
+        chunks.push(text.substring(0, maxChunkSize));
+    }
+    
+    return chunks;
+}
 
 async function saveChat(userId, title, url, source, messages) {
     try {
