@@ -54,37 +54,53 @@ function chunkMessages(messages) {
     }];
 }
 
-function chunkText(text) {
+function chunkText(text, messages = null, maxChunkSize = 3000) {
     const chunks = [];
-    const words = text.split(/\s+/);
-    let currentChunk = '';
-    let chunkIndex = 0;
     
-    words.forEach(word => {
-        if (currentChunk.length + word.length + 1 > CHUNK_SIZE) {
-            if (currentChunk.length > 0) {
-                chunks.push({
-                    content: currentChunk.trim(),
-                    index: chunkIndex++
-                });
+    // If messages are provided, chunk by message boundaries
+    if (messages && Array.isArray(messages)) {
+        let currentChunk = '';
+        
+        for (const msg of messages) {
+            const messageText = `${msg.role}: ${msg.content}\n\n`;
+            
+            // If adding this message would exceed max size, save current chunk and start new one
+            if (currentChunk.length + messageText.length > maxChunkSize && currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+                currentChunk = '';
             }
-            currentChunk = word;
-        } else {
-            currentChunk += (currentChunk.length > 0 ? ' ' : '') + word;
+            
+            currentChunk += messageText;
         }
-    });
+        
+        // Add the last chunk if it has content
+        if (currentChunk.trim()) {
+            chunks.push(currentChunk.trim());
+        }
+    } else {
+        // Simple text chunking
+        const words = text.split(/\s+/);
+        let currentChunk = '';
+        
+        for (const word of words) {
+            if (currentChunk.length + word.length + 1 > maxChunkSize && currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+                currentChunk = '';
+            }
+            currentChunk += (currentChunk ? ' ' : '') + word;
+        }
+        
+        if (currentChunk.trim()) {
+            chunks.push(currentChunk.trim());
+        }
+    }
     
-    if (currentChunk.length > 0) {
-        chunks.push({
-            content: currentChunk.trim(),
-            index: chunkIndex
-        });
+    // Ensure we always return at least one chunk
+    if (chunks.length === 0 && text) {
+        chunks.push(text.substring(0, maxChunkSize));
     }
     
     return chunks;
 }
 
-module.exports = {
-    chunkMessages,
-    chunkText
-};
+module.exports = {chunkText,chunkMessages}

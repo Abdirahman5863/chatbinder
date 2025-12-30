@@ -1,72 +1,87 @@
 const { supabase } = require('../config/database');
-const embeddingService = require('../services/embeddingService');
-const chunkText = require('../utils/chunking');
+const embeddingService = require('./embeddingService');
+const chunkText = require('../utils/chunking'); // Fixed: should work now
 const logger = require('../utils/logger');
 
 async function saveChat(userId, title, url, source, messages) {
-    logger.info(`Saving chat "${title}" for user: ${userId}`);
-    
-    // Create chat record
-    const { data: chat, error: chatError } = await supabase
-        .from('chats')
-        .insert([{
-            user_id: userId,
-            title: title || 'Untitled Chat',
-            url: url || '',
-            source: source || 'chatgpt',
-            message_count: messages.length
-        }])
-        .select()
-        .single();
-
-    if (chatError) {
-        logger.error(`Error creating chat: ${chatError.message}`);
-        throw chatError;
-    }
-
-    // Combine all messages into text
-    const fullText = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
-    
-    // Chunk the conversation
-    const chunks = chunkText(fullText, messages);
-    logger.info(`Created ${chunks.length} chunks for chat ${chat.id}`);
-
-    // Save chunks
-    for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
+    try {
+        logger.info(`Saving chat "${title}" for user: ${userId}`);
+        logger.info(`Messages count: ${messages.length}`);
         
-        const { data: savedChunk, error: chunkError } = await supabase
-            .from('chat_chunks')
+        // Create chat record
+        const { data: chat, error: chatError } = await supabase
+            .from('chats')
             .insert([{
-                chat_id: chat.id,
-                content: chunk,
-                chunk_index: i
+                user_id: userId,
+                title: title || 'Untitled Chat',
+                url: url || '',
+                source: source || 'chatgpt',
+                message_count: messages.length
             }])
             .select()
             .single();
 
-        if (chunkError) {
-            logger.error(`Error saving chunk: ${chunkError.message}`);
-            continue;
+        if (chatError) {
+            logger.error(`Error creating chat: ${chatError.message}`);
+            throw chatError;
         }
 
-        // Generate embedding
-        try {
-            const embedding = await embeddingService.generateEmbedding(chunk);
+        logger.info(`Chat created with ID: ${chat.id}`);
+
+        // Combine all messages into text
+        const fullText = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
+        
+        // Chunk the conversation
+        const chunks = chunkText(fullText, messages);
+        logger.info(`Created ${chunks.length} chunks for chat ${chat.id}`);
+
+        // Save chunks
+        for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
             
-            await supabase
-                .from('chat_chunk_embeddings')
+            const { data: savedChunk, error: chunkError } = await supabase
+                .from('chat_chunks')
                 .insert([{
-                    chunk_id: savedChunk.id,
-                    embedding: embedding
-                }]);
-        } catch (embError) {
-            logger.error(`Error generating embedding: ${embError.message}`);
-            // Continue even if embedding fails
-        }
-    }
+                    chat_id: chat.id,
+                    content: chunk,
+                    chunk_index: i
+                }])
+                .select()
+                .single();
 
-    return chat;
+            if (chunkError) {
+                logger.error(`Error saving chunk ${i}: ${chunkError.message}`);
+                continue;
+            }
+
+            logger.info(`Saved chunk ${i + 1}/${chunks.length} for chat ${chat.id}`);
+
+            // Generate embedding (optional - can fail without breaking)
+            try {
+                const embedding = await embeddingService.generateEmbedding(chunk);
+                
+                await supabase
+                    .from('chat_chunk_embeddings')
+                    .insert([{
+                        chunk_id: savedChunk.id,
+                        embedding: embedding
+                    }]);
+                
+                logger.info(`Generated embedding for chunk ${i + 1}`);
+            } catch (embError) {
+                logger.error(`Error generating embedding for chunk ${i}: ${embError.message}`);
+                // Continue even if embedding fails
+            }
+        }
+
+        logger.info(`Successfully saved chat ${chat.id} with ${chunks.length} chunks`);
+        return chat;
+        
+    } catch (error) {
+        logger.error(`Error in saveChat: ${error.message}`);
+        logger.error(error.stack);
+        throw error;
+    }
 }
 
 async function getChat(chatId, userId) {
