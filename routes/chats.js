@@ -1,83 +1,109 @@
 const express = require('express');
 const router = express.Router();
-const chatService = require('../services/chatService');
-const binderService = require('../services/binderService');
+const { supabase } = require('../config/database');
 const logger = require('../utils/logger');
 const { identifyUser } = require('../middleware/auth');
 
-// Apply auth middleware to all routes
+// Apply auth middleware
 router.use(identifyUser);
 
-// Save a new chat
-router.post('/save', async (req, res, next) => {
+// Search binders (user's only)
+router.get('/chats', async (req, res, next) => {
     try {
-        const { title, url, source, messages, binderId } = req.body;
+        const { query } = req.query;
         
-        if (!messages || messages.length === 0) {
-            return res.status(400).json({ error: 'No messages provided' });
+        if (!query) {
+            return res.status(400).json({ error: 'Query parameter required' });
         }
 
-        logger.info(`Saving chat for user: ${req.userId}`);
-        
-        // Save chat with user_id
-        const chat = await chatService.saveChat(
-            req.userId,
-            title,
-            url,
-            source,
-            messages
-        );
+        logger.info(`Searching binders for "${query}" for user: ${req.userId}`);
 
-        // If binderId provided, add to binder
-        if (binderId) {
-            await binderService.addChatToBinder(binderId, chat.id, req.userId);
-            logger.info(`Chat ${chat.id} added to binder ${binderId}`);
+        // Search in binder names and descriptions
+        const { data: binderResults, error: binderError } = await supabase
+            .from('binders')
+            .select(`
+                id,
+                name,
+                description,
+                created_at
+            `)
+            .eq('user_id', req.userId)
+            .or(`name.ilike.%${query}%,description.ilike.%${query}%`)
+            .limit(10);
+
+        if (binderError) {
+            logger.error(`Binder search error: ${binderError.message}`);
+            throw binderError;
         }
 
-        res.json(chat);
-    } catch (error) {
-        logger.error(`Error saving chat: ${error.message}`);
-        next(error);
-    }
-});
+        // Also search in chat content within user's binders
+        const { data: userChats } = await supabase
+            .from('chats')
+            .select('id')
+            .eq('user_id', req.userId);
 
-// Get a specific chat (user's only)
-router.get('/:chatId', async (req, res, next) => {
-    try {
-        logger.info(`Getting chat ${req.params.chatId} for user: ${req.userId}`);
-        const chat = await chatService.getChat(req.params.chatId, req.userId);
-        
-        if (!chat) {
-            return res.status(404).json({ error: 'Chat not found' });
+        const chatIds = userChats?.map(c => c.id) || [];
+
+        let contentResults = [];
+        if (chatIds.length > 0) {
+            const { data: chunkResults, error: chunkError } = await supabase
+                .from('chat_chunks')
+                .select(`
+                    id,
+                    content,
+                    chat_id,
+                    chats!inner(
+                        title,
+                        source,
+                        created_at
+                    )
+                `)
+                .in('chat_id', chatIds)
+                .ilike('content', `%${query}%`)
+                .limit(10);
+
+            if (!chunkError && chunkResults) {
+                // Get binder info for each chat
+                for (const result of chunkResults) {
+                    const { data: binderChat } = await supabase
+                        .from('binder_chats')
+                        .select(`
+                            binder_id,
+                            binders(name)
+                        `)
+                        .eq('chat_id', result.chat_id)
+                        .limit(1)
+                        .single();
+
+                    contentResults.push({
+                        type: 'content',
+                        binder_id: binderChat?.binder_id,
+                        binder_name: binderChat?.binders?.name,
+                        chat_title: result.chats?.title,
+                        chat_source: result.chats?.source,
+                        content: result.content,
+                        chat_date: result.chats?.created_at
+                    });
+                }
+            }
         }
-        
-        res.json(chat);
-    } catch (error) {
-        logger.error(`Error getting chat: ${error.message}`);
-        next(error);
-    }
-});
 
-// List user's chats
-router.get('/', async (req, res, next) => {
-    try {
-        logger.info(`Listing chats for user: ${req.userId}`);
-        const chats = await chatService.listChats(req.userId);
-        res.json(chats);
-    } catch (error) {
-        logger.error(`Error listing chats: ${error.message}`);
-        next(error);
-    }
-});
+        // Combine results
+        const formattedBinderResults = binderResults.map(b => ({
+            type: 'binder',
+            binder_id: b.id,
+            binder_name: b.name,
+            description: b.description,
+            created_at: b.created_at
+        }));
 
-// Delete a chat (user's only)
-router.delete('/:chatId', async (req, res, next) => {
-    try {
-        logger.info(`Deleting chat ${req.params.chatId} for user: ${req.userId}`);
-        await chatService.deleteChat(req.params.chatId, req.userId);
-        res.json({ success: true });
+        const allResults = [...formattedBinderResults, ...contentResults];
+
+        logger.info(`Found ${allResults.length} results for "${query}"`);
+        res.json(allResults);
+
     } catch (error) {
-        logger.error(`Error deleting chat: ${error.message}`);
+        logger.error(`Error searching: ${error.message}`);
         next(error);
     }
 });
